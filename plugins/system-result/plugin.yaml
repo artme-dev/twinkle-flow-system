@@ -48,12 +48,12 @@ session:
           MISSING=""
           while IFS= read -r name; do
             [ -n "$name" ] || continue
-            echo "$FRONT" | grep -q "^${name}:" || MISSING="$name"
+            echo "$FRONT" | grep -q "^${name}:" || MISSING="${MISSING:+$MISSING, }$name"
           done <<EOF
           $(jq -r '.[]' task/expected-outputs.json)
           EOF
           if [ -n "$MISSING" ]; then
-            echo "BLOCKED: task/result.md frontmatter is missing required output: ${MISSING}." >&2
+            echo "BLOCKED: task/result.md frontmatter is missing required output(s): ${MISSING}." >&2
             exit 2
           fi
           exit 0
