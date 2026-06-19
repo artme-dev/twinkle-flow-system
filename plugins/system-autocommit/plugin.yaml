@@ -9,10 +9,38 @@ session:
     SessionStart:
       - name: "Seed git credentials from GITHUB_TOKEN"
         command: |
-          if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+          # Always seed a fallback git identity first, so in-session commits have
+          # an author even when no token is present (commit aborts "who are you"
+          # otherwise). Writes to the ephemeral container ~/.gitconfig; idempotent.
+          git config --global user.name "${GIT_AUTHOR_NAME:-twinkle-worker}"
+          git config --global user.email "${GIT_AUTHOR_EMAIL:-twinkle-worker@orchestra.local}"
+          if [ -z "${GITHUB_TOKEN:-}" ]; then
             echo "[twinkle-flows] GITHUB_TOKEN not set; skipping git auth." >&2
             exit 0
           fi
           git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GITHUB_TOKEN}"; }; f'
           git config --global url."https://github.com/".insteadOf "git@github.com:" 2>/dev/null || true
-          echo "git auth ready"
+          echo "git auth ready (remote: $(git -C /work remote get-url origin 2>/dev/null || echo none))"
+    Stop:
+      - name: "Block session end with uncommitted code"
+        command: |
+          # Enforce an in-session COMMIT of worker code changes before the session
+          # ends. Push is NOT enforced here — git_guard_post is the deterministic
+          # push backstop and a no-op on a clean synced tree. POSIX /bin/sh (dash).
+          INPUT=$(cat)
+          STOP_ACTIVE=$(echo "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)
+          # Livelock cap: never block twice in a row.
+          [ "$STOP_ACTIVE" = "true" ] && exit 0
+          # Dirty = uncommitted tracked/untracked changes, excluding session
+          # scaffolding under .claude/ (mirrors the twinkle-git skill's add pathspec).
+          # task/ and logs/ are already in .git/info/exclude on the worker repo.
+          DIRTY=$(git status --porcelain -- . ':(exclude).claude' 2>/dev/null)
+          # Clean OR already-committed (worktree clean) tree -> nothing to commit.
+          # An already-committed-but-unpushed tree is clean here, so it passes; the
+          # platform backstops the push.
+          [ -z "$DIRTY" ] && exit 0
+          # Tracked code is dirty AND not yet committed -> block once.
+          echo "BLOCKED: commit your code changes (see /twinkle-git) before ending the session — exclude task/ and .claude/." >&2
+          exit 2
+        blocking: true
+        message: "Commit your code changes (see /twinkle-git) before ending the session."
