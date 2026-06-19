@@ -15,7 +15,7 @@ session:
           elif [ -f task/context.json ]; then
             echo "## Your Task"
             echo ""
-            jq -r '"**" + (.title // "Task") + "**\n\n" + (.description // "")' task/context.json 2>/dev/null
+            jq -r '"**" + (if (.title // "")=="" then "Task" else .title end) + "**\n\n" + (.description // "")' task/context.json 2>/dev/null
           fi
           if ls task/context/*.md >/dev/null 2>&1; then
             echo ""
@@ -28,7 +28,7 @@ session:
             done
           fi
           if [ -f task/context.json ]; then
-            FEEDBACK=$(jq -r '.feedback // empty' task/context.json 2>/dev/null)
+            FEEDBACK=$(jq -r 'if (.feedback|type)=="array" then (.feedback|map("- **"+(.author//"?")+"** ("+(.date//"")+"): "+(.body//""))|join("\n")) elif (.feedback|type)=="string" then .feedback else empty end' task/context.json 2>/dev/null)
             if [ -n "$FEEDBACK" ]; then
               echo ""
               echo "## Feedback from Prior Attempts"
@@ -43,5 +43,6 @@ session:
             echo "Your task/result.md frontmatter MUST include these keys:"
             jq -r '.[] | "- " + .' task/expected-outputs.json 2>/dev/null
           fi
+          [ -f task/flow-prompt.md ] || [ -f task/context.json ] || echo "(No flow-prompt.md or context.json under ./task/ — inspect the directory directly.)"
           echo ""
           echo "Work in ./task/. Write your outcome to task/result.md before ending the session."
