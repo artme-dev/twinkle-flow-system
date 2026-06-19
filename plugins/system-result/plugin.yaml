@@ -16,6 +16,8 @@ session:
           - `status: needs_human` — when you need credentials, external access, or approval
           - `status: failed` — when a technical failure prevents completion
 
+          Valid statuses: done, done_with_concerns, needs_human, blocked, needs_context, failed (see /write-result for each).
+
           The session cannot end without a valid task/result.md.
           RULES
     Stop:
@@ -30,8 +32,8 @@ session:
           fi
           STATUS=$(grep -m1 '^status:' task/result.md | sed 's/^status:[[:space:]]*//' | tr -d '"')
           case "$STATUS" in
-            done|needs_human|failed) ;;
-            *) echo "BLOCKED: task/result.md has invalid or missing status. Must be: done, needs_human, failed." >&2; exit 2 ;;
+            done|done_with_concerns|needs_human|blocked|needs_context|failed) ;;
+            *) echo "BLOCKED: task/result.md has invalid or missing status. Must be: done, done_with_concerns, needs_human, blocked, needs_context, failed." >&2; exit 2 ;;
           esac
         message: "You must create task/result.md before ending the session. Use /write-result skill."
         blocking: true
@@ -42,12 +44,18 @@ session:
           [ "$STOP_ACTIVE" = "true" ] && exit 0
           [ ! -f task/result.md ] && exit 0
           [ ! -f task/expected-outputs.json ] && exit 0
-          FRONT=$(sed -n '2,/^---$/p' task/result.md)
-          for name in $(jq -r '.[]' task/expected-outputs.json); do
-            echo "$FRONT" | grep -q "^${name}:" || {
-              echo "BLOCKED: task/result.md frontmatter is missing required output: ${name}." >&2
-              exit 2
-            }
-          done
+          FRONT=$(sed -n '/^---$/,/^---$/p' task/result.md | sed '1d;$d')
+          MISSING=""
+          while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            echo "$FRONT" | grep -q "^${name}:" || MISSING="$name"
+          done <<EOF
+          $(jq -r '.[]' task/expected-outputs.json)
+          EOF
+          if [ -n "$MISSING" ]; then
+            echo "BLOCKED: task/result.md frontmatter is missing required output: ${MISSING}." >&2
+            exit 2
+          fi
+          exit 0
         blocking: true
         message: "All declared flow outputs must appear in task/result.md frontmatter."
