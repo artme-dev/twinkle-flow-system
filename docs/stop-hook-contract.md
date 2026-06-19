@@ -1,8 +1,23 @@
-# Stop-hook coexistence & independence contract (system tier)
+# Stop-hook coexistence & independence contract
 
-The three force-attached system plugins contribute **multiple `Stop` hooks** to every
-worker session. This document is the contract that keeps them safe together, and the
+The force-attached plugins contribute **multiple `Stop` hooks** to every worker
+session. This document is the contract that keeps them safe together, and the
 guarantee any future plugin adding a `Stop` hook must uphold.
+
+With **both** the system tier and the core tier force-attached (the live
+default), a worker session carries **~6 blocking `Stop` gates**:
+
+| # | Source | Tier | Gate |
+|---|---|---|---|
+| 1 | `system-result` | system | `task/result.md` present + valid status |
+| 2 | `system-result` | system | declared flow outputs present in result.md frontmatter |
+| 3 | `system-autocommit` | system | tracked code committed in-session |
+| 4 | `core-memory` | core | `task/journal.md` present (no-ops when journal-mcp is unwired) |
+| 5 | `core-state` | core | `state.md` present + `<!-- last_task: ... -->` first-line marker |
+| 6 | `core-summary` | core | `task/summary.yaml` declares `type:` + `summary:` |
+
+(System gates are locked-on; core gates are toggleable per plugin, so a workspace
+may run with fewer.)
 
 ## How Stop hooks are merged into a session
 
@@ -38,24 +53,60 @@ true. So the gates get exactly **one** enforced round across the whole session. 
 - result-gate ⇢ only about `task/result.md` (presence / status / declared outputs).
 - autocommit-gate ⇢ only about uncommitted tracked code (excluding `.claude/`, the same pathspec
   the `twinkle-git` skill stages with).
+- journal-gate (core) ⇢ only about `task/journal.md` (and only when journal-mcp is wired).
+- state-gate (core) ⇢ only about `state.md` + its `<!-- last_task: ... -->` first-line marker.
+- summary-gate (core) ⇢ only about `task/summary.yaml`'s `type:` + `summary:` keys.
 
-Because the conditions don't overlap, the **merge order is immaterial on a healthy run**: an agent
-that writes a valid `result.md` and commits its code satisfies both regardless of which fires
-first. The gates never contend for the same artifact.
+Each of the six owns a **distinct artifact**, so no two ever contend. Because the conditions don't
+overlap, the **merge order is immaterial on a healthy run**: an agent that writes a valid
+`result.md`, commits its code, and writes its journal / state / summary artifacts satisfies every
+gate regardless of which fires first.
+
+## Multi-Stop aggregation — CONFIRMED FROM SOURCE
+
+**This is the load-bearing fact the whole 6-gate set rests on, and it is settled
+from source — claude-code 2.1.92 (the worker image's bundled CLI).** Reading the
+2.1.92 `cli.js`:
+
+> Claude Code runs **all** `Stop` hooks registered for the event and **aggregates
+> every exit-2 blocking message** into the **single** enforced re-prompt round. It
+> is a **concurrent generator-merge** — there is **no abort-on-first**. The
+> feared "only one artifact enforced per session" does **not** occur: each gate's
+> stderr is carried back to the model together.
+
+`stop_hook_active` then caps the session at **exactly one** enforced round — but
+that one round carries **every** gate's complaint at once. So with all six gates
+firing on a non-terminal session, the agent is re-prompted once with the union of
+all six blocking messages, and is expected to satisfy all of them before its next
+(now `stop_hook_active: true`) Stop passes through.
+
+This **upgrades** the previously observation-limited note: per-`Stop`-hook
+exit codes are still not on any gateway-observable surface (the stream-json JSONL
+omits per-hook telemetry and the container is removed on stop), but the
+aggregation behavior is no longer inferred — it is read from source and pinned by
+a test (below).
+
+### The aggregation capstone (pins the behavior against image bumps)
+
+`services/controllers/runner/tests/stop-aggregation.bats` (in the twinkle
+monorepo) is a docker-based Tier-1 capstone that converts the source-read into a
+binary test: it writes a synthetic `/work/.claude/settings.json` with **three**
+trivial, independent exit-2 `Stop` hooks (distinct stderr markers), runs
+`orchestra-worker-image` with `claude -p` on a one-line prompt exactly as the
+runner does, and asserts **all three** markers appear in one turn. If a future
+worker-image bump changes aggregation (e.g. to abort-on-first), the test goes red
+in CI before the broken image ships. It SKIPs (never false-greens) without a
+Claude token or the built image.
 
 ## Observed behavior (Tier-2 live, 2026-06-20)
 
-A real `sandbox` worker run (`tests/scenarios/harness/system-plugins-live.test.mjs`) confirmed all
-three `Stop` gates coexist (`Plugin: Stop hooks count=3`) and the session ended cleanly with a valid
-`result.md` **and** an in-session commit — i.e. no gate left the task non-terminal or the tree
+A real `sandbox` worker run (`tests/scenarios/harness/system-plugins-live.test.mjs`) confirmed the
+three system `Stop` gates coexist (`Plugin: Stop hooks count=3`) and the session ended cleanly with a
+valid `result.md` **and** an in-session commit — i.e. no gate left the task non-terminal or the tree
 uncommitted. The autocommit gate was observed to `exit 2` on uncommitted code and the agent committed
-in response (then the runner `git_guard_post` backstopped the push).
-
-**Observation limit (honest):** per-`Stop`-hook exit codes and the exact intra-session
-ordering/interleaving of the gates are **not** on any gateway-observable surface — `Stop`-hook
-telemetry is absent from the worker stream-json JSONL, and the worker container is removed on stop,
-so no per-hook stderr survives. Coexistence (settings.json + the PREPARE count) and the net outcome
-(clean terminal + commit) are determinable; the exit-2/retry sequence is not.
+in response (then the runner `git_guard_post` backstopped the push). The core-tier live lane
+(`core-plugins-live.test.mjs`) extends this to the full ~6-gate set (asserting mid-run
+`.hooks.Stop` ≥ 6 + a clean terminal).
 
 ## Contract for any future Stop hook (system or otherwise)
 
