@@ -1,0 +1,53 @@
+name: system-result
+description: "Enforces task/result.md creation and status validation before session end"
+system: true
+
+session:
+  skills:
+    - skills/write-result/SKILL.md
+  hooks:
+    SessionStart:
+      - name: "Result lifecycle rules"
+        command: |
+          cat << 'RULES'
+          ## Result Lifecycle
+
+          If the task cannot be completed, use the /write-result skill to record the outcome:
+          - `status: needs_human` — when you need credentials, external access, or approval
+          - `status: failed` — when a technical failure prevents completion
+
+          The session cannot end without a valid task/result.md.
+          RULES
+    Stop:
+      - name: "Block session end without valid result.md"
+        command: |
+          INPUT=$(cat)
+          STOP_ACTIVE=$(echo "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)
+          if [ "$STOP_ACTIVE" = "true" ]; then exit 0; fi
+          if [ ! -f task/result.md ]; then
+            echo "BLOCKED: You must create task/result.md before ending the session. Use /write-result skill." >&2
+            exit 2
+          fi
+          STATUS=$(grep -m1 '^status:' task/result.md | sed 's/^status:[[:space:]]*//' | tr -d '"')
+          case "$STATUS" in
+            done|needs_human|failed) ;;
+            *) echo "BLOCKED: task/result.md has invalid or missing status. Must be: done, needs_human, failed." >&2; exit 2 ;;
+          esac
+        message: "You must create task/result.md before ending the session. Use /write-result skill."
+        blocking: true
+      - name: "Validate declared flow outputs present"
+        command: |
+          INPUT=$(cat)
+          STOP_ACTIVE=$(echo "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)
+          [ "$STOP_ACTIVE" = "true" ] && exit 0
+          [ ! -f task/result.md ] && exit 0
+          [ ! -f task/expected-outputs.json ] && exit 0
+          FRONT=$(sed -n '2,/^---$/p' task/result.md)
+          for name in $(jq -r '.[]' task/expected-outputs.json); do
+            echo "$FRONT" | grep -q "^${name}:" || {
+              echo "BLOCKED: task/result.md frontmatter is missing required output: ${name}." >&2
+              exit 2
+            }
+          done
+        blocking: true
+        message: "All declared flow outputs must appear in task/result.md frontmatter."

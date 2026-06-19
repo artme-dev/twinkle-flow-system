@@ -1,0 +1,6 @@
+[package]
+name = "artme-dev/twinkle-flow-system"
+version = "v0.1.0"
+
+[exports]
+plugins = "*"

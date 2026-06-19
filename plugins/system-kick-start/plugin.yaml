@@ -1,0 +1,47 @@
+name: system-kick-start
+description: "Orients the session: reads the assembled task/ files and tells the agent what to work on and what 'done' looks like"
+system: true
+
+session:
+  hooks:
+    SessionStart:
+      - name: "Explain the task to the agent"
+        command: |
+          [ -d task ] || exit 0
+          if [ -f task/flow-prompt.md ]; then
+            echo "## Your Task"
+            echo ""
+            cat task/flow-prompt.md
+          elif [ -f task/context.json ]; then
+            echo "## Your Task"
+            echo ""
+            jq -r '"**" + (.title // "Task") + "**\n\n" + (.description // "")' task/context.json 2>/dev/null
+          fi
+          if ls task/context/*.md >/dev/null 2>&1; then
+            echo ""
+            echo "## Outputs from Previous Tasks"
+            echo ""
+            for f in task/context/*.md; do
+              echo "### $(basename "$f" .md)"
+              cat "$f"
+              echo ""
+            done
+          fi
+          if [ -f task/context.json ]; then
+            FEEDBACK=$(jq -r '.feedback // empty' task/context.json 2>/dev/null)
+            if [ -n "$FEEDBACK" ]; then
+              echo ""
+              echo "## Feedback from Prior Attempts"
+              echo ""
+              echo "$FEEDBACK"
+            fi
+          fi
+          if [ -f task/expected-outputs.json ]; then
+            echo ""
+            echo "## Required Outputs"
+            echo ""
+            echo "Your task/result.md frontmatter MUST include these keys:"
+            jq -r '.[] | "- " + .' task/expected-outputs.json 2>/dev/null
+          fi
+          echo ""
+          echo "Work in ./task/. Write your outcome to task/result.md before ending the session."
